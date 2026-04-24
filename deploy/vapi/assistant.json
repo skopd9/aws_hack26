@@ -1,0 +1,28 @@
+{
+  "name": "IP-Pulse",
+  "firstMessage": "IP-Pulse here. Tell me about a patent threat you're worried about, or describe your stack so I can watch filings for you.",
+  "model": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-5-20250929",
+    "temperature": 0.3,
+    "systemPrompt": "You are the voice front-end for IP-Pulse. The engineer will describe a patent threat or their stack. Forward their utterance to the IP-Pulse agent via the configured webhook; when the webhook returns a voice-friendly result string, speak it back concisely. Do not invent patent numbers; only repeat what the agent returns."
+  },
+  "voice": {
+    "provider": "11labs",
+    "voiceId": "21m00Tcm4TlvDq8ikWAM"
+  },
+  "transcriber": {
+    "provider": "deepgram",
+    "model": "nova-2"
+  },
+  "server": {
+    "url": "https://YOUR-DEPLOYMENT.example.com/api/vapi/callback",
+    "secret": "REPLACE_WITH_VAPI_WEBHOOK_SECRET"
+  },
+  "serverMessages": [
+    "end-of-call-report",
+    "status-update",
+    "transcript",
+    "function-call"
+  ]
+}

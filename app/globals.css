@@ -1,0 +1,53 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: theme('colors.pulse.bg');
+  color: theme('colors.pulse.ink');
+  font-family: theme('fontFamily.sans');
+}
+
+.glow {
+  box-shadow: 0 0 0 1px theme('colors.pulse.border'),
+    0 0 40px -12px rgba(110, 231, 255, 0.25);
+}
+
+.scrollbar-thin {
+  scrollbar-width: thin;
+  scrollbar-color: theme('colors.pulse.border') transparent;
+}
+.scrollbar-thin::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: theme('colors.pulse.border');
+  border-radius: 3px;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+.pulse-dot {
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.shimmer {
+  background: linear-gradient(90deg,
+    theme('colors.pulse.panel') 0%,
+    theme('colors.pulse.border') 50%,
+    theme('colors.pulse.panel') 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.8s linear infinite;
+}

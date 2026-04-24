@@ -1,0 +1,29 @@
+# syntax=docker/dockerfile:1.6
+# Stage 1: deps
+FROM cgr.dev/chainguard/node:latest AS deps
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev || npm install --omit=dev
+
+# Stage 2: build
+FROM cgr.dev/chainguard/node:latest AS builder
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci || npm install
+COPY . .
+RUN npm run build
+
+# Stage 3: runtime (distroless, non-root)
+FROM cgr.dev/chainguard/node:latest AS runner
+WORKDIR /app
+ENV NODE_ENV=production \
+    NEXT_TELEMETRY_DISABLED=1 \
+    PORT=3000 \
+    HOSTNAME=0.0.0.0
+
+COPY --from=builder /app/public ./public
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+
+EXPOSE 3000
+ENTRYPOINT ["node", "server.js"]

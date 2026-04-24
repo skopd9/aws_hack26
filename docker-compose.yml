@@ -1,0 +1,46 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    image: ippulse-web:latest
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - WUNDERGRAPH_URL=http://wundergraph:9991
+    depends_on:
+      - redis
+      - wundergraph
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    image: ippulse-worker:latest
+    env_file: .env
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+
+  wundergraph:
+    image: wundergraph/wundernode:latest
+    volumes:
+      - ./.wundergraph:/app/.wundergraph
+    ports:
+      - "9991:9991"
+    environment:
+      - WG_NODE_URL=http://0.0.0.0:9991
+
+  redis:
+    image: cgr.dev/chainguard/redis:latest
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:

@@ -1,0 +1,66 @@
+# IP-Pulse — architectural rules for future coding sessions
+
+## Identity
+
+IP-Pulse is a real-time agentic patent-intelligence platform for software engineers. It closes the "Latency Gap" (regulatory drift of AI-patent filings since the 2025 USPTO Kim Memo) and the "Interpretation Gap" (500-page filings that attorneys charge thousands to read) by running a Claude-orchestrated MCP agent over live IP data sources, grounded in the user's conversationally described stack.
+
+## Stack (pinned)
+
+- Next.js 14 App Router, TypeScript strict, Tailwind
+- Vercel AI SDK (`ai`, `@ai-sdk/anthropic`, `@ai-sdk/openai-compatible`, `@ai-sdk/react`)
+- Anthropic Claude as orchestrator; Kimi K2.6 on Akash ML for bulk text (claim summarization, prior-art rerank)
+- WunderGraph for MCP tool definitions (`.wundergraph/operations/*`)
+- ioredis for session + telemetry + rate limiting
+- Zod for every input/output boundary
+- Chainguard `cgr.dev/chainguard/*` base images
+
+## Architectural rules
+
+1. **MCP-first**: all external data (USPTO, Google Patents, GitHub, PACER/PTAB, TinyFish, Nexla, Ghost, Akash ML) is accessed ONLY through WunderGraph MCP operations in `.wundergraph/operations/`. Never call `fetch` to an external host from `app/api/**` or `lib/agent/**`.
+
+2. **Agent lives in `lib/agent/`**. Route handlers are thin — they verify, parse, dispatch. Orchestration logic (tool-use loops, system prompts, RiskReport assembly) never leaks into routes.
+
+3. **Three surfaces, one orchestrator**: web chat (`/api/chat` streaming), Slack (`/api/slack/events`), Vapi (`/api/vapi/callback`). All converge on `lib/agent/orchestrator.ts`. `runStream(messages, tenant)` for the chat, `runOnce(messages, tenant)` for Slack/Vapi.
+
+4. **Investigative chain**: when assessing a threat, the system prompt instructs the agent to follow this order with early-exit:
+   discover → read → distill (Kimi) → invalidate (github.priorArt + Kimi rerank) → weight (pacer + ptab) → ground (tinyfish) → cache (ghost) → compose.
+
+5. **`MOCK_FALLBACK` rule**: every integration client in `lib/integrations/*` and every `.wundergraph/operations/*` must honor `process.env.MOCK_FALLBACK === 'true'` by returning typed mock data when creds are missing or a live call errors. The demo must never crash because an external service is down.
+
+6. **Redis key conventions**:
+   - `tenant:{id}:session` — TTL 24h — conversation history
+   - `tenant:{id}:stack_profile` — TTL 7d — user's described stack
+   - `tenant:{id}:rl` — token bucket (Lua script)
+   - `tool:calls` — capped stream (XTRIM MAXLEN ~ 10000) — every MCP tool invocation
+
+7. **Telemetry rule**: `lib/wundergraph/mcp.ts:executeTool` wraps every call with an XADD to `tool:calls` carrying `{ tenant, tool, args, durationMs, outcome }`. The web chat's right pane reads this via SSE at `/api/telemetry/stream` — this is the MCP-visibility demo money-shot.
+
+8. **Security**:
+   - `import 'server-only'` on every module that holds secrets or hits the DB.
+   - Slack `v0` signature verification, Vapi HMAC verification mandatory on their respective routes.
+   - No secret values in client components or `public/`.
+
+9. **Output contract**: the agent's terminal response is always a `RiskReport` (see `lib/agent/prompts.ts` for the Zod schema):
+   ```ts
+   { verdict, confidence, matchedPatents[], priorArtFindings[], litigationProfile, roadmapImpact, recommendedActions[] }
+   ```
+   Both `components/chat/RiskReportCard.tsx` (web), `lib/slack.ts` Block Kit builder (Slack), and `lib/vapi.toVoiceFriendly` (voice) render from this same object.
+
+10. **Do not touch**:
+    - `.wundergraph/generated/**` (WG codegen)
+    - `public/**` (static assets only)
+    - `.next/**`, `node_modules/**`
+
+## Sponsor-prize guardrails
+
+- **TinyFish** is the web-research backbone — two tools (`googlePatents.search`, `tinyfish.verifyProduct`). Don't refactor these to use a different crawler.
+- **Akash ML (Kimi K2.6)** is the bulk-text workhorse — two tools (`akashml.summarizeClaim`, `akashml.rerankPriorArt`). Don't route these to Claude; the two-model split is a feature.
+- **Redis** is used for four distinct patterns (session, stack profile, telemetry stream, rate limit). Don't collapse them.
+- **Chainguard** images for web + worker. If you change a base image, run `npm run security:scan` and confirm 0-CVE.
+- **Guild AI**: `lib/slack.ts` is swap-ready for a future `lib/guild.ts`. Keep the `postMessage` / `verifySignature` / `buildRiskReportBlocks` surface stable so a one-file swap works.
+
+## Build hygiene
+
+- Run `npm run typecheck` after any file-group-sized change.
+- Keep `zod` schemas at the edges, pass parsed objects inward; never pass raw `unknown` across a layer.
+- New MCP tools go in `.wundergraph/operations/*` and are auto-exposed to Claude via `lib/wundergraph/mcp.getMcpTools()`. Adding a tool = one file, no orchestrator change.

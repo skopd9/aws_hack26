@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1.6
+FROM cgr.dev/chainguard/node:latest AS deps
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci || npm install
+
+FROM cgr.dev/chainguard/node:latest AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json tsconfig.json ./
+COPY lib ./lib
+COPY workers ./workers
+
+ENTRYPOINT ["npx", "tsx", "workers/index.ts"]

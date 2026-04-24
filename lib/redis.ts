@@ -1,0 +1,76 @@
+import 'server-only';
+import Redis from 'ioredis';
+
+declare global {
+  var __ippulse_redis: Redis | undefined;
+}
+
+function createClient(): Redis {
+  const client = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
+    maxRetriesPerRequest: 2,
+    enableOfflineQueue: false,
+    lazyConnect: false,
+    retryStrategy: (times) => Math.min(times * 500, 5000)
+  });
+
+  let loggedError = false;
+  client.on('error', (err) => {
+    if (!loggedError) {
+      console.warn(
+        `[redis] connection error (further errors suppressed): ${err.message}`
+      );
+      loggedError = true;
+    }
+  });
+
+  return client;
+}
+
+export const redis: Redis = global.__ippulse_redis ?? createClient();
+
+if (process.env.NODE_ENV !== 'production') {
+  global.__ippulse_redis = redis;
+}
+
+export async function safeRedisOp<T>(
+  op: () => Promise<T>,
+  fallback: T
+): Promise<T> {
+  try {
+    return await op();
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('ECONNREFUSED') && !msg.includes('max retries')) {
+      console.warn('[redis] op failed:', msg);
+    }
+    return fallback;
+  }
+}
+
+export const TTL = {
+  session: 60 * 60 * 24,
+  stackProfile: 60 * 60 * 24 * 7,
+  toolResultCache: 60 * 60
+} as const;
+
+export function sessionKey(tenant: string) {
+  return `tenant:${tenant}:session`;
+}
+export function stackProfileKey(tenant: string) {
+  return `tenant:${tenant}:stack_profile`;
+}
+export function historyKey(tenant: string) {
+  return `tenant:${tenant}:history`;
+}
+export function toolCacheKey(tool: string, argHash: string) {
+  return `cache:${tool}:${argHash}`;
+}
+
+export async function cacheGet<T>(key: string): Promise<T | null> {
+  const raw = await redis.get(key);
+  return raw ? (JSON.parse(raw) as T) : null;
+}
+
+export async function cacheSet<T>(key: string, value: T, ttlSec: number) {
+  await redis.set(key, JSON.stringify(value), 'EX', ttlSec);
+}

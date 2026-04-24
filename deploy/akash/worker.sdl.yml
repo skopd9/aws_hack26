@@ -1,0 +1,45 @@
+---
+version: "2.0"
+
+services:
+  ippulse-worker:
+    image: ippulse-worker:latest
+    env:
+      - NODE_ENV=production
+      - REDIS_URL=
+      - ANTHROPIC_API_KEY=
+      - MOCK_FALLBACK=true
+    expose:
+      - port: 3001
+        as: 3001
+        to:
+          - global: true
+
+profiles:
+  compute:
+    worker-compute:
+      resources:
+        cpu:
+          units: 0.5
+        memory:
+          size: 512Mi
+        storage:
+          size: 1Gi
+
+  placement:
+    worker-placement:
+      attributes:
+        host: akash
+      signedBy:
+        anyOf:
+          - akash1365yvmc4s7awdyj3n2sav7xfx76adc6dnmlx63
+      pricing:
+        worker-compute:
+          denom: uakt
+          amount: 1000
+
+deployment:
+  ippulse-worker:
+    worker-placement:
+      profile: worker-compute
+      count: 1
