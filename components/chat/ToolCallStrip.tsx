@@ -6,8 +6,12 @@ type ToolEvent = {
   id: string;
   tenant: string;
   tool: string;
-  outcome: 'ok' | 'mock' | 'error';
+  // 'ok'    — first attempt succeeded
+  // 'retry' — succeeded after one or more retries (transient failure recovered)
+  // 'error' — all retries exhausted; agent saw a __toolError envelope
+  outcome: 'ok' | 'retry' | 'error';
   durationMs: number;
+  attempts?: number;
   error?: string;
   ts: number;
 };
@@ -63,16 +67,24 @@ function ToolRow({ ev }: { ev: ToolEvent }) {
   const outcomeStyle =
     ev.outcome === 'ok'
       ? 'text-pulse-ok'
-      : ev.outcome === 'mock'
+      : ev.outcome === 'retry'
         ? 'text-pulse-warn'
         : 'text-pulse-danger';
 
+  const label =
+    ev.outcome === 'retry' && ev.attempts
+      ? `retry×${ev.attempts}`
+      : ev.outcome;
+
   return (
-    <div className="flex items-center gap-2 rounded-md border border-pulse-border bg-pulse-bg/40 px-2.5 py-1.5 text-xs">
+    <div
+      className="flex items-center gap-2 rounded-md border border-pulse-border bg-pulse-bg/40 px-2.5 py-1.5 text-xs"
+      title={ev.error}
+    >
       <span className={`h-1.5 w-1.5 rounded-full ${outcomeDot(ev.outcome)}`} />
       <span className="flex-1 truncate font-mono text-pulse-ink">{ev.tool}</span>
       <span className={`font-mono uppercase tracking-wider ${outcomeStyle}`}>
-        {ev.outcome}
+        {label}
       </span>
       <span className="font-mono text-pulse-muted">{ev.durationMs}ms</span>
     </div>
@@ -82,7 +94,7 @@ function ToolRow({ ev }: { ev: ToolEvent }) {
 function outcomeDot(o: ToolEvent['outcome']) {
   return o === 'ok'
     ? 'bg-pulse-ok'
-    : o === 'mock'
+    : o === 'retry'
       ? 'bg-pulse-warn'
       : 'bg-pulse-danger';
 }

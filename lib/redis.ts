@@ -3,12 +3,15 @@ import Redis from 'ioredis';
 
 declare global {
   var __ippulse_redis: Redis | undefined;
+  var __ippulse_redis_blocking: Redis | undefined;
 }
 
-function createClient(): Redis {
+function createClient(opts: { blocking?: boolean } = {}): Redis {
   const client = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
-    maxRetriesPerRequest: 2,
-    enableOfflineQueue: false,
+    // Blocking commands (XREAD BLOCK) must NOT be killed by maxRetriesPerRequest,
+    // otherwise ioredis aborts the long-poll before any entry can arrive.
+    maxRetriesPerRequest: opts.blocking ? null : 2,
+    enableOfflineQueue: !!opts.blocking,
     lazyConnect: false,
     retryStrategy: (times) => Math.min(times * 500, 5000)
   });
@@ -17,7 +20,7 @@ function createClient(): Redis {
   client.on('error', (err) => {
     if (!loggedError) {
       console.warn(
-        `[redis] connection error (further errors suppressed): ${err.message}`
+        `[redis${opts.blocking ? ':blocking' : ''}] connection error (further errors suppressed): ${err.message}`
       );
       loggedError = true;
     }
@@ -27,9 +30,12 @@ function createClient(): Redis {
 }
 
 export const redis: Redis = global.__ippulse_redis ?? createClient();
+export const redisBlocking: Redis =
+  global.__ippulse_redis_blocking ?? createClient({ blocking: true });
 
 if (process.env.NODE_ENV !== 'production') {
   global.__ippulse_redis = redis;
+  global.__ippulse_redis_blocking = redisBlocking;
 }
 
 export async function safeRedisOp<T>(

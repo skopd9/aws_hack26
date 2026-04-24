@@ -22,10 +22,11 @@ export default function Home() {
           that go stale the moment you run them. IP-Pulse closes the{' '}
           <span className="text-pulse-ink">Latency Gap</span> and the{' '}
           <span className="text-pulse-ink">Interpretation Gap</span> — Claude orchestrates
-          MCP tools over WunderGraph to search USPTO + Google Patents, invalidate with
-          GitHub prior-art, weight with PTAB history, summarize 500-page filings via Kimi
-          K2.6 on Akash GPUs, and ground with live TinyFish product crawls — streaming a
-          structured Risk Report before your coffee cools.
+          MCP tools over a WunderGraph Cosmo federated graph (5 subgraphs, one router) to
+          search USPTO + Google Patents, invalidate with GitHub prior-art, weight with PTAB
+          history, summarize 500-page filings via Kimi K2.6 on Akash GPUs, and ground with
+          live TinyFish product crawls — streaming a structured Risk Report before your
+          coffee cools.
         </p>
       </header>
 
@@ -35,7 +36,7 @@ export default function Home() {
             <div className="flex items-center gap-2">
               <div className="h-2 w-2 rounded-full bg-pulse-ok" />
               <h3 className="font-mono text-xs uppercase tracking-wider text-pulse-muted">
-                Chat · Claude + Kimi K2.6 via WunderGraph MCP
+                Chat · Claude + Kimi K2.6 via Cosmo Router (MCP)
               </h3>
             </div>
             <span className="font-mono text-xs text-pulse-muted">
@@ -68,7 +69,7 @@ export default function Home() {
         <span>·</span>
         <span>Kimi K2.6 on Akash ML</span>
         <span>·</span>
-        <span>WunderGraph MCP</span>
+        <span>WunderGraph Cosmo</span>
         <span>·</span>
         <span>Redis</span>
         <span>·</span>

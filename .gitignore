@@ -2,8 +2,7 @@ node_modules/
 .next/
 out/
 dist/
-.wundergraph/generated/
-.wundergraph/cache/
+cosmo/schemas/
 
 .env
 .env.local
@@ -16,3 +15,4 @@ npm-debug.log*
 coverage/
 *.tsbuildinfo
 next-env.d.ts
+.vercel

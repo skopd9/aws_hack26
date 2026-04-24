@@ -1,4 +1,7 @@
-import { readToolCallsFrom } from '@/lib/redis/streams';
+import {
+  readRecentToolCalls,
+  readToolCallsFrom
+} from '@/lib/redis/streams';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -18,8 +21,22 @@ export async function GET() {
         }
       }, 15_000);
 
+      let lastId = '$';
       try {
-        for await (const { id, event } of readToolCallsFrom('$', 5000)) {
+        const backfill = await readRecentToolCalls(20);
+        for (const { id, event } of backfill) {
+          lastId = id;
+          const payload = JSON.stringify({ id, ...event });
+          controller.enqueue(
+            encoder.encode(`event: tool-call\ndata: ${payload}\n\n`)
+          );
+        }
+      } catch (err) {
+        console.warn('[telemetry] backfill failed:', err);
+      }
+
+      try {
+        for await (const { id, event } of readToolCallsFrom(lastId, 5000)) {
           const payload = JSON.stringify({ id, ...event });
           controller.enqueue(
             encoder.encode(`event: tool-call\ndata: ${payload}\n\n`)

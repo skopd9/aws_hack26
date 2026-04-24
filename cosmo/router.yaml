@@ -1,0 +1,19 @@
+version: "1"
+
+# Optional Cosmo Router config consumed via CONFIG_PATH.
+# By default we run the router with DEV_MODE=true and just GRAPH_API_TOKEN,
+# which is enough for the hackathon demo (router fetches the latest valid
+# composition from Cosmo Cloud automatically). Mount this file and set
+# CONFIG_PATH=/etc/cosmo/router.yaml when you want to tune knobs.
+listen_addr: "0.0.0.0:3002"
+graph:
+  name: ip-pulse
+
+dev_mode: true
+
+# Per-subgraph timeouts — protect the agent loop from a slow upstream.
+traffic_shaping:
+  router:
+    request_timeout: 30s
+  all:
+    request_timeout: 25s

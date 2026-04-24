@@ -1,0 +1,145 @@
+---
+# IP-Pulse — full stack on Akash (web + worker + redis) as a single
+# multi-service deployment. Services in the same SDL share a private
+# DNS namespace, so the web container can reach Redis at host `redis`
+# on port 6379 without exposing it to the public internet.
+#
+# Image refs assume you've pushed to your Chainguard customer registry:
+#   cgr.dev/<YOUR_CHAINGUARD_ORG>/ippulse-web:latest
+#   cgr.dev/<YOUR_CHAINGUARD_ORG>/ippulse-worker:latest
+# Replace <YOUR_CHAINGUARD_ORG> via `deploy/akash/push.sh` (which also
+# does the tag + push) before uploading to console.akash.network.
+#
+# Redis is the public Chainguard image (no push needed).
+
+version: "2.0"
+
+services:
+  web:
+    image: cgr.dev/CHAINGUARD_ORG/ippulse-web:latest
+    env:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      - REDIS_URL=redis://redis:6379
+      # Set these in the Akash Console "Update Configuration" step OR
+      # bake them into the image at build-time (not recommended for keys).
+      - ANTHROPIC_API_KEY
+      - TINYFISH_API_KEY
+      - GITHUB_TOKEN
+      - COSMO_ROUTER_URL
+      - MOCK_FALLBACK=true
+    expose:
+      - port: 3000
+        as: 80
+        proto: tcp
+        to:
+          - global: true
+        accept:
+          # Optional: lock to a specific Akash provider hostname once known.
+          # - ip-pulse.example.com
+    depends-on:
+      - redis
+
+  worker:
+    image: cgr.dev/CHAINGUARD_ORG/ippulse-worker:latest
+    env:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
+      - ANTHROPIC_API_KEY
+      - COSMO_ROUTER_URL
+      - MOCK_FALLBACK=true
+    # Worker has no inbound — outbound only to Redis + Anthropic + Cosmo.
+    depends-on:
+      - redis
+
+  redis:
+    image: cgr.dev/chainguard/redis:latest
+    # Image ENTRYPOINT is already redis-server; only pass redis args.
+    args:
+      - "--appendonly"
+      - "yes"
+      - "--dir"
+      - "/data"
+    expose:
+      - port: 6379
+        proto: tcp
+        # Default `to:` is in-cluster only — Redis is NOT exposed publicly.
+        to:
+          - service: web
+          - service: worker
+    params:
+      storage:
+        data:
+          mount: /data
+          readOnly: false
+
+profiles:
+  compute:
+    web-compute:
+      resources:
+        cpu:
+          units: 1.0
+        memory:
+          size: 1Gi
+        storage:
+          - size: 2Gi
+    worker-compute:
+      resources:
+        cpu:
+          units: 0.5
+        memory:
+          size: 512Mi
+        storage:
+          - size: 1Gi
+    redis-compute:
+      resources:
+        cpu:
+          units: 0.5
+        memory:
+          size: 512Mi
+        storage:
+          - size: 1Gi
+          - name: data
+            size: 2Gi
+            attributes:
+              persistent: true
+              class: beta3
+
+  placement:
+    akash-dc:
+      attributes:
+        host: akash
+      signedBy:
+        anyOf:
+          # Overclock Labs trusted-provider audit key. Restricts bids to
+          # providers that have passed the Overclock Labs audit, which
+          # gives a stable demo experience.
+          - akash1365yvmc4s7awdyj3n2sav7xfx76adc6dnmlx63
+      pricing:
+        # Each compute profile's max bid in uakt per block (1 AKT = 1e6
+        # uakt, ~6s/block). Bids below these caps will be accepted; the
+        # provider you choose in the bid step decides the actual rate.
+        web-compute:
+          denom: uakt
+          amount: 2000
+        worker-compute:
+          denom: uakt
+          amount: 1000
+        redis-compute:
+          denom: uakt
+          amount: 1000
+
+deployment:
+  web:
+    akash-dc:
+      profile: web-compute
+      count: 1
+  worker:
+    akash-dc:
+      profile: worker-compute
+      count: 1
+  redis:
+    akash-dc:
+      profile: redis-compute
+      count: 1

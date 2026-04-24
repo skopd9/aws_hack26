@@ -1,0 +1,58 @@
+---
+# IP-Pulse web — single-service variant. Use this when Redis is hosted
+# externally (Upstash, ElastiCache, Redis Cloud, etc.). For a fully
+# self-contained Akash deployment use `stack.sdl.yml` instead.
+
+version: "2.0"
+
+services:
+  web:
+    image: cgr.dev/CHAINGUARD_ORG/ippulse-web:latest
+    env:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      # Required: rediss:// or redis:// URL of an externally-hosted Redis
+      # reachable from Akash providers. Set this in the "Update
+      # Configuration" step on console.akash.network.
+      - REDIS_URL
+      - ANTHROPIC_API_KEY
+      - TINYFISH_API_KEY
+      - GITHUB_TOKEN
+      - COSMO_ROUTER_URL
+      - MOCK_FALLBACK=true
+    expose:
+      - port: 3000
+        as: 80
+        proto: tcp
+        to:
+          - global: true
+
+profiles:
+  compute:
+    web-compute:
+      resources:
+        cpu:
+          units: 1.0
+        memory:
+          size: 1Gi
+        storage:
+          - size: 2Gi
+
+  placement:
+    akash-dc:
+      attributes:
+        host: akash
+      signedBy:
+        anyOf:
+          - akash1365yvmc4s7awdyj3n2sav7xfx76adc6dnmlx63
+      pricing:
+        web-compute:
+          denom: uakt
+          amount: 2000
+
+deployment:
+  web:
+    akash-dc:
+      profile: web-compute
+      count: 1

@@ -1,6 +1,6 @@
 import 'server-only';
-import { PatentHitSchema, type PatentHit, withFallback } from './_common';
-import { crawlUrl } from './tinyfish';
+import { PatentHitSchema, type PatentHit, IntegrationError } from './_common';
+import { webSearch } from './tinyfish';
 
 export type GooglePatentsQuery = {
   query: string;
@@ -10,86 +10,70 @@ export type GooglePatentsQuery = {
   limit?: number;
 };
 
-function buildUrl(q: GooglePatentsQuery): string {
-  const params = new URLSearchParams();
-  params.set('q', q.query);
-  if (q.cpcClass) params.append('cpc', q.cpcClass);
-  if (q.dateFrom) params.set('after', `priority:${q.dateFrom}`);
-  if (q.dateTo) params.set('before', `priority:${q.dateTo}`);
-  return `https://patents.google.com/?${params.toString()}`;
+function buildQuery(q: GooglePatentsQuery): string {
+  const parts: string[] = ['site:patents.google.com', q.query];
+  if (q.cpcClass) parts.push(`"${q.cpcClass}"`);
+  if (q.dateFrom) parts.push(`after:${q.dateFrom}`);
+  if (q.dateTo) parts.push(`before:${q.dateTo}`);
+  return parts.join(' ');
 }
 
-function extractHits(html: string, limit: number): PatentHit[] {
+// patents.google.com URLs look like:
+//   https://patents.google.com/patent/US12118765B2
+//   https://patents.google.com/patent/US12118765B2/en
+//   https://patents.google.com/patent/EP3824689A1/en
+const PATENT_URL_RE =
+  /^https?:\/\/patents\.google\.com\/patent\/([A-Z]{2}\d[A-Z0-9]*)(?:\/[a-z]{2})?\/?$/i;
+
+function extractPatentNo(url: string): string | null {
+  const m = url.match(PATENT_URL_RE);
+  return m?.[1] ?? null;
+}
+
+export async function searchPatents(q: GooglePatentsQuery): Promise<PatentHit[]> {
+  const tool = 'googlePatents.search';
+  const limit = q.limit ?? 10;
+
+  const search = await webSearch({
+    query: buildQuery(q),
+    location: 'US',
+    language: 'en'
+  });
+
   const hits: PatentHit[] = [];
-  const re =
-    /data-result[^>]+data-patent-number="([^"]+)"[^>]*>[\s\S]*?<h3[^>]*>([\s\S]*?)<\/h3>[\s\S]*?<span[^>]*>([^<]*)<\/span>/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(html)) && hits.length < limit) {
-    const [, patentNo, titleRaw, assigneeRaw] = match;
+  const seen = new Set<string>();
+  for (const r of search) {
+    const patentNo = extractPatentNo(r.url);
+    if (!patentNo || seen.has(patentNo)) continue;
+    seen.add(patentNo);
+
+    // Title from Google Patents results is usually
+    //   "Some title - Google Patents"
+    // or "US12345678B2 — Some title"; strip these suffixes/prefixes.
+    const title = r.title
+      .replace(/\s*[-—]\s*Google Patents\s*$/i, '')
+      .replace(new RegExp(`^${patentNo}\\s*[-—]\\s*`, 'i'), '')
+      .trim();
+
     hits.push(
       PatentHitSchema.parse({
-        patentNo: patentNo.trim(),
-        title: titleRaw.replace(/<[^>]+>/g, '').trim(),
-        assignee: assigneeRaw.trim(),
-        url: `https://patents.google.com/patent/${patentNo.trim()}`
+        patentNo,
+        title,
+        abstract: r.snippet,
+        url: `https://patents.google.com/patent/${patentNo}`
       })
+    );
+    if (hits.length >= limit) break;
+  }
+
+  if (hits.length === 0) {
+    throw new IntegrationError(
+      tool,
+      'empty_result',
+      `Web search returned no patents.google.com results for "${q.query}"${
+        q.dateFrom ? ` after ${q.dateFrom}` : ''
+      }${q.dateTo ? ` before ${q.dateTo}` : ''}. Try uspto_search or broader keywords.`
     );
   }
   return hits;
-}
-
-export async function searchPatents(q: GooglePatentsQuery) {
-  const limit = q.limit ?? 10;
-
-  return withFallback<PatentHit[]>(
-    'googlePatents.search',
-    async () => {
-      const url = buildUrl(q);
-      const crawl = await crawlUrl(url, 'search-result');
-      const hits = extractHits(crawl.data.html, limit);
-      if (hits.length === 0 && crawl.outcome !== 'ok') {
-        throw new Error('crawl returned no hits and was not a live success');
-      }
-      return hits;
-    },
-    () => mockHits(q, limit)
-  );
-}
-
-function mockHits(q: GooglePatentsQuery, limit: number): PatentHit[] {
-  const seeds = [
-    {
-      patentNo: 'US20250123456A1',
-      title: 'Retrieval-augmented generation with vector-indexed claim chunks',
-      assignee: 'Acme AI Research Corp.',
-      priorityDate: '2024-07-02',
-      cpcClasses: ['G06F16/3347', 'G06N3/0455'],
-      abstract:
-        'Systems and methods for retrieval-augmented generation wherein claim-level chunks are indexed in a vector store and surfaced by similarity to a user query.'
-    },
-    {
-      patentNo: 'US12118765B2',
-      title: 'LLM agent with dynamic tool selection via a gateway',
-      assignee: 'Northwind Patents LLC',
-      priorityDate: '2023-11-18',
-      cpcClasses: ['G06N20/00', 'G06F9/54'],
-      abstract:
-        'A large language model agent selects tools exposed via a central gateway conforming to a model context protocol.'
-    },
-    {
-      patentNo: 'US20241089234A1',
-      title: 'Serverless vector similarity search with tenant isolation',
-      assignee: 'Helios Vector Inc.',
-      priorityDate: '2024-02-09',
-      cpcClasses: ['G06F16/90348'],
-      abstract:
-        'A serverless system performs vector similarity search while enforcing per-tenant isolation in a shared index.'
-    }
-  ];
-  return seeds.slice(0, limit).map((s) =>
-    PatentHitSchema.parse({
-      ...s,
-      url: `https://patents.google.com/patent/${s.patentNo}`
-    })
-  );
 }

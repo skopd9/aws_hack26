@@ -1,19 +1,22 @@
 ---
+# IP-Pulse worker — single-service variant. Use this when you only want
+# the background worker on Akash and the web app is hosted elsewhere
+# (Vercel, Fly, etc.). For the full stack on Akash, use `stack.sdl.yml`.
+
 version: "2.0"
 
 services:
-  ippulse-worker:
-    image: ippulse-worker:latest
+  worker:
+    image: cgr.dev/CHAINGUARD_ORG/ippulse-worker:latest
     env:
       - NODE_ENV=production
-      - REDIS_URL=
-      - ANTHROPIC_API_KEY=
+      # External Redis URL (e.g. Upstash). Set in the Akash Console
+      # "Update Configuration" step.
+      - REDIS_URL
+      - ANTHROPIC_API_KEY
+      - COSMO_ROUTER_URL
       - MOCK_FALLBACK=true
-    expose:
-      - port: 3001
-        as: 3001
-        to:
-          - global: true
+    # No `expose:` — worker is outbound-only.
 
 profiles:
   compute:
@@ -24,10 +27,10 @@ profiles:
         memory:
           size: 512Mi
         storage:
-          size: 1Gi
+          - size: 1Gi
 
   placement:
-    worker-placement:
+    akash-dc:
       attributes:
         host: akash
       signedBy:
@@ -39,7 +42,7 @@ profiles:
           amount: 1000
 
 deployment:
-  ippulse-worker:
-    worker-placement:
+  worker:
+    akash-dc:
       profile: worker-compute
       count: 1

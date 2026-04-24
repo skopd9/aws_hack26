@@ -1,19 +1,20 @@
 # syntax=docker/dockerfile:1.6
-# Stage 1: deps
-FROM cgr.dev/chainguard/node:latest AS deps
-WORKDIR /app
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev || npm install --omit=dev
+# IP-Pulse web app — Chainguard hardened.
+#
+# Build stage: cgr.dev/chainguard/node:latest-dev includes npm + a shell so
+# we can install deps and run `next build`.
+# Runtime stage: cgr.dev/chainguard/node:latest is the distroless variant
+# (no shell, no package manager, runs as the non-root `node` UID) and only
+# carries the Next.js standalone output + static assets.
 
-# Stage 2: build
-FROM cgr.dev/chainguard/node:latest AS builder
+FROM cgr.dev/chainguard/node:latest-dev AS builder
 WORKDIR /app
+ENV NEXT_TELEMETRY_DISABLED=1
 COPY package.json package-lock.json* ./
 RUN npm ci || npm install
 COPY . .
 RUN npm run build
 
-# Stage 3: runtime (distroless, non-root)
 FROM cgr.dev/chainguard/node:latest AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
@@ -21,9 +22,19 @@ ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0
 
-COPY --from=builder /app/public ./public
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
+# Next.js `output: 'standalone'` (next.config.mjs) bundles only the files
+# the server actually needs into .next/standalone, including a minimal
+# node_modules tree — that's what we copy into the distroless image.
+# (No /public dir in this project; skip its COPY.)
+COPY --from=builder --chown=node:node /app/.next/standalone ./
+COPY --from=builder --chown=node:node /app/.next/static ./.next/static
 
 EXPOSE 3000
+
+# Distroless has no shell, curl, or wget — but it does have node, and node
+# 18+ exposes a global `fetch`. The healthcheck hits /api/health which in
+# turn pings Redis, so an unreachable Redis flips the container unhealthy.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+
 ENTRYPOINT ["node", "server.js"]

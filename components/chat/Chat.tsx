@@ -3,6 +3,7 @@
 import { useChat } from '@ai-sdk/react';
 import { useEffect, useRef } from 'react';
 import { Message } from './Message';
+import { VoiceButton } from './VoiceButton';
 
 const EXAMPLES = [
   "I'm building a RAG pipeline with pgvector and Cohere embeddings. Any patent threats filed in 2025 I should worry about?",
@@ -90,9 +91,12 @@ export function Chat() {
             {isStreaming ? 'Running' : 'Send'}
           </button>
         </div>
-        <p className="mt-2 font-mono text-[10px] uppercase tracking-wider text-pulse-muted">
-          enter to send · shift+enter for newline · tool calls stream to the right pane
-        </p>
+        <div className="mt-2 flex items-center justify-between gap-3">
+          <p className="font-mono text-[10px] uppercase tracking-wider text-pulse-muted">
+            enter to send · shift+enter for newline · tool calls stream to the right pane
+          </p>
+          <VoiceButton />
+        </div>
       </form>
     </div>
   );

@@ -1,11 +1,11 @@
 # Ghost AI DB — setup
 
-[Ghost](https://ghost.build) is an agent-native Postgres service. Each database
-is a real Postgres instance reachable at
-`postgresql://ghost:...@<name>.ghost.build/postgres`, with `pgvectorscale` and
-`pg_textsearch` preinstalled. IP-Pulse uses one to cache patent rows and
-answer `ghost_similarPatents` from that cache before going out to live
-USPTO / Google Patents.
+[Ghost](https://ghost.build) is an agent-native Postgres service hosted on
+Timescale Cloud. Each database is a real Postgres instance reachable at
+`postgresql://tsdbadmin:****@<id>.<space>.tsdb.cloud.timescale.com:<port>/tsdb`,
+with `pgvectorscale` and `pg_textsearch` preinstalled. IP-Pulse uses one to
+cache patent rows and answer `ghost_similarPatents` from that cache before
+going out to live USPTO / Google Patents.
 
 ## 60-second setup
 
@@ -21,8 +21,11 @@ ghost create --name ip-pulse --wait
 
 # 4. Get a connection string and drop it into .env
 ghost connect ip-pulse
-# → postgresql://ghost:****@ip-pulse.ghost.build/postgres
-# Put that value in GHOST_DATABASE_URL in your .env.
+# → postgresql://tsdbadmin:****@<id>.<space>.tsdb.cloud.timescale.com:<port>/tsdb
+# Put that value in GHOST_DATABASE_URL in your .env, exactly as printed.
+# Do NOT append ?sslmode=require — pg v8.13+ silently treats that as
+# verify-full and rejects Ghost's managed CA. The integration enables TLS
+# explicitly via { rejectUnauthorized: false } in lib/integrations/ghost.ts.
 
 # 5. Apply the schema
 ghost sql ip-pulse < deploy/ghost/schema.sql
@@ -49,7 +52,7 @@ ghost mcp install cursor
 ## Graceful degradation
 
 If `GHOST_DATABASE_URL` is unset or unreachable, both Ghost MCP tools return
-typed mock data (empty results / mock IDs) as long as `MOCK_FALLBACK=true`.
+a verbose `__toolError` envelope (cause: `missing_credential`); the agent reads the envelope and falls through to the live USPTO / Google Patents tools rather than failing.
 The demo still runs — it just stops short-circuiting repeat queries.
 
 ## Upgrade path: hybrid search

@@ -1,6 +1,12 @@
 import { NextRequest } from 'next/server';
+import {
+  convertToCoreMessages,
+  type CoreMessage,
+  type Message as UiMessage
+} from 'ai';
 import { runStream } from '@/lib/agent/orchestrator';
 import { tryConsume } from '@/lib/redis/rateLimit';
+import { getSessionHistory } from '@/lib/context/session';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -24,11 +30,22 @@ export async function POST(req: NextRequest) {
   }
 
   const body = (await req.json()) as { messages?: unknown };
-  const messages = Array.isArray(body.messages) ? body.messages : [];
+  const incomingUi = (Array.isArray(body.messages) ? body.messages : []) as UiMessage[];
+
+  // The browser (`useChat`) re-sends the entire visible history on every
+  // turn. Redis is authoritative for prior turns (it survives reloads,
+  // second tabs, and compression), so we hydrate from Redis and only
+  // adopt the *new user input* from the request — everything after the
+  // last assistant message in the client's view.
+  const persisted = await getSessionHistory(tenant);
+  const incomingCore = convertToCoreMessages(incomingUi);
+  const newUserMessages = takeNewUserTail(incomingCore);
+  const messagesForModel: CoreMessage[] = [...persisted, ...newUserMessages];
 
   const result = await runStream({
     tenant,
-    messages: messages as Parameters<typeof runStream>[0]['messages']
+    messages: messagesForModel,
+    newUserMessages
   });
 
   const response = result.toDataStreamResponse();
@@ -41,4 +58,19 @@ export async function POST(req: NextRequest) {
   }
 
   return response;
+}
+
+// Everything after the last assistant message in the client view is "new"
+// user input for this turn — typically just the latest user prompt, but
+// could include multi-message edits. The orchestrator persists these into
+// the canonical Redis session alongside the resolved assistant response.
+function takeNewUserTail(messages: CoreMessage[]): CoreMessage[] {
+  let lastAssistantIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant') {
+      lastAssistantIdx = i;
+      break;
+    }
+  }
+  return messages.slice(lastAssistantIdx + 1);
 }

@@ -2,7 +2,7 @@
 
 ## Intent
 
-Nexla ingests the USPTO daily XML bulk feed, normalizes it, and lands rows into a sink (Postgres or S3) that IP-Pulse reads through `.wundergraph/operations/nexla.latestFilings.ts`.
+Nexla ingests the USPTO daily XML bulk feed, normalizes it, and lands rows into a sink (Postgres or S3) that IP-Pulse reads through the `patents` Cosmo subgraph (`subgraphs/patents/index.ts` → `nexlaLatestFilings` query → `lib/integrations/nexla.ts`).
 
 This is the "wake up and see everything filed yesterday" data path. The on-demand web / Slack / Vapi queries use live USPTO + Google Patents APIs; Nexla is for batch + historical.
 
@@ -42,4 +42,4 @@ This is the "wake up and see everything filed yesterday" data path. The on-deman
 
 ## Wire-up check
 
-With `NEXLA_SINK_URL` set, calling `/operations/nexla.latestFilings` (or invoking the `nexla_latestFilings` MCP tool) should return real rows. Without it, `MOCK_FALLBACK=true` returns a typed mock — the demo still works.
+With `NEXLA_SINK_URL` set, the `nexlaLatestFilings` query on the `patents` subgraph (or the `nexla_latestFilings` MCP tool that wraps it) returns real rows. Without it the tool returns a verbose `__toolError` envelope (cause: `missing_credential`); the agent then pivots to `uspto_search` / `googlePatents_search` per the system-prompt failure-handling contract.

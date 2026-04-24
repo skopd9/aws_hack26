@@ -1,23 +1,24 @@
 import 'server-only';
 import { Pool, type PoolConfig } from 'pg';
-import { PatentHitSchema, type PatentHit, withFallback } from './_common';
+import {
+  PatentHitSchema,
+  type PatentHit,
+  IntegrationError,
+  requireEnv
+} from './_common';
 
 /**
  * Ghost AI DB — https://ghost.build
  *
- * Ghost is a managed Postgres service designed for agents. Each database is
- * reached via a plain `postgresql://ghost:...@<name>.ghost.build/postgres`
- * connection string. We cache patent rows in a `patents` table and use
- * Postgres full-text search (tsvector + GIN) to surface similar filings for
- * repeat queries — which lets us skip expensive live USPTO / Google Patents
- * round-trips on warm cache hits.
+ * Ghost is a managed Postgres service designed for agents, hosted on
+ * Timescale Cloud. Each database is reached via a connection string of the
+ * form `postgresql://tsdbadmin:...@<id>.<space>.tsdb.cloud.timescale.com:<port>/tsdb`
+ * (TLS required, managed CA chain). We cache patent rows in a `patents`
+ * table and use Postgres full-text search (tsvector + GIN) to surface
+ * similar filings for repeat queries — which lets us skip expensive live
+ * USPTO / Google Patents round-trips on warm cache hits.
  *
- * Setup: see deploy/ghost/README.md. TL;DR:
- *   curl -fsSL https://install.ghost.build | sh
- *   ghost login
- *   ghost create --name ip-pulse --wait
- *   ghost connect ip-pulse           # copy the URL into GHOST_DATABASE_URL
- *   ghost sql ip-pulse < deploy/ghost/schema.sql
+ * Setup: see deploy/ghost/README.md.
  */
 
 declare global {
@@ -34,16 +35,22 @@ function createPool(url: string): Pool {
     connectionTimeoutMillis: 5_000
   };
 
-  // Ghost-hosted databases use managed TLS with an intermediate CA; this is
-  // the standard pattern for node-postgres against any hosted Postgres
-  // (Neon, Supabase, RDS, Ghost, etc.).
+  // Ghost runs on Timescale Cloud, so connection strings target
+  // *.tsdb.cloud.timescale.com with managed TLS. Enable SSL for any
+  // non-loopback host — same pattern node-postgres needs against Neon,
+  // Supabase, RDS, Ghost, etc. — and trust the managed CA chain.
   try {
     const host = new URL(url).hostname;
-    if (host.endsWith('.ghost.build')) {
+    const isLoopback =
+      host === 'localhost' ||
+      host === '127.0.0.1' ||
+      host === '::1' ||
+      host.endsWith('.local');
+    if (!isLoopback) {
       config.ssl = { rejectUnauthorized: false };
     }
   } catch {
-    // If URL parsing fails, let pg surface a clearer error on first query.
+    /* let pg surface the URL parse error on first query */
   }
 
   const pool = new Pool(config);
@@ -53,9 +60,8 @@ function createPool(url: string): Pool {
   return pool;
 }
 
-function getPool(): Pool {
-  const url = process.env.GHOST_DATABASE_URL;
-  if (!url) throw new Error('GHOST_DATABASE_URL missing');
+function getPool(tool: string): Pool {
+  const url = requireEnv(tool, 'GHOST_DATABASE_URL');
   if (!global.__ippulse_ghost_pool) {
     global.__ippulse_ghost_pool = createPool(url);
   }
@@ -104,48 +110,62 @@ type PatentRow = {
   url: string;
 };
 
-export async function upsertPatentEmbedding(patent: PatentHit) {
-  return withFallback<{ ok: boolean; id: string }>(
-    'ghost.upsert',
-    async () => {
-      const pool = getPool();
-      const res = await pool.query<{ patent_no: string }>(UPSERT_SQL, [
-        patent.patentNo,
-        patent.title,
-        patent.abstract,
-        patent.assignee,
-        patent.priorityDate,
-        patent.cpcClasses,
-        patent.url
-      ]);
-      return { ok: true, id: res.rows[0]?.patent_no ?? patent.patentNo };
-    },
-    () => ({ ok: true, id: `mock-${patent.patentNo}` })
-  );
+export async function upsertPatentEmbedding(
+  patent: PatentHit
+): Promise<{ ok: boolean; id: string }> {
+  const tool = 'ghost.upsert';
+  const pool = getPool(tool);
+
+  try {
+    const res = await pool.query<{ patent_no: string }>(UPSERT_SQL, [
+      patent.patentNo,
+      patent.title,
+      patent.abstract,
+      patent.assignee,
+      patent.priorityDate,
+      patent.cpcClasses,
+      patent.url
+    ]);
+    return { ok: true, id: res.rows[0]?.patent_no ?? patent.patentNo };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new IntegrationError(
+      tool,
+      'upstream_error',
+      `Ghost upsert for ${patent.patentNo} failed: ${message}. Verify schema (deploy/ghost/schema.sql) and that GHOST_DATABASE_URL is reachable.`
+    );
+  }
 }
 
-export async function similarPatents(args: { query: string; limit?: number }) {
+export async function similarPatents(args: {
+  query: string;
+  limit?: number;
+}): Promise<PatentHit[]> {
+  const tool = 'ghost.similarPatents';
   const limit = args.limit ?? 5;
+  const pool = getPool(tool);
 
-  return withFallback<PatentHit[]>(
-    'ghost.similarPatents',
-    async () => {
-      const pool = getPool();
-      const res = await pool.query<PatentRow>(SIMILAR_SQL, [args.query, limit]);
-      return res.rows.map((r) =>
-        PatentHitSchema.parse({
-          patentNo: r.patent_no,
-          title: r.title ?? '',
-          abstract: r.abstract ?? '',
-          assignee: r.assignee ?? '',
-          priorityDate: r.priority_date ?? '',
-          cpcClasses: r.cpc_classes ?? [],
-          url:
-            r.url ||
-            `https://patents.google.com/patent/${r.patent_no}`
-        })
-      );
-    },
-    () => []
-  );
+  try {
+    const res = await pool.query<PatentRow>(SIMILAR_SQL, [args.query, limit]);
+    // Empty cache is a valid result, NOT an error — the agent should fall
+    // through to the live search tools (uspto_search, googlePatents_search).
+    return res.rows.map((r) =>
+      PatentHitSchema.parse({
+        patentNo: r.patent_no,
+        title: r.title ?? '',
+        abstract: r.abstract ?? '',
+        assignee: r.assignee ?? '',
+        priorityDate: r.priority_date ?? '',
+        cpcClasses: r.cpc_classes ?? [],
+        url: r.url || `https://patents.google.com/patent/${r.patent_no}`
+      })
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new IntegrationError(
+      tool,
+      'upstream_error',
+      `Ghost similarity search failed: ${message}. The cache is unavailable; fall through to uspto_search / googlePatents_search.`
+    );
+  }
 }

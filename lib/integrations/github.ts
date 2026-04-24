@@ -2,7 +2,9 @@ import 'server-only';
 import {
   PriorArtCandidateSchema,
   type PriorArtCandidate,
-  withFallback
+  IntegrationError,
+  failFromResponse,
+  requireEnv
 } from './_common';
 
 type GhSearchResponse = {
@@ -22,70 +24,59 @@ export async function findPriorArt(args: {
   claimSummary: string;
   priorityDate: string;
   limit?: number;
-}) {
+}): Promise<PriorArtCandidate[]> {
+  const tool = 'github.priorArt';
   const limit = args.limit ?? 8;
+  const token = requireEnv(tool, 'GITHUB_TOKEN');
 
-  return withFallback<PriorArtCandidate[]>(
-    'github.priorArt',
-    async () => {
-      const token = process.env.GITHUB_TOKEN;
-      if (!token) throw new Error('GITHUB_TOKEN missing');
+  const keywords = topKeywords(args.claimSummary, 5);
+  if (keywords.length === 0) {
+    throw new IntegrationError(
+      tool,
+      'invalid_input',
+      `claimSummary "${args.claimSummary.slice(0, 80)}" yielded zero keywords after stop-word filtering. Pass a richer summary (run akashml_summarizeClaim first).`
+    );
+  }
+  const priorityCutoff = isoDateOrNow(args.priorityDate);
+  const params = new URLSearchParams({
+    q: `${keywords.join(' ')} created:<${priorityCutoff}`,
+    sort: 'stars',
+    order: 'desc',
+    per_page: String(limit)
+  });
 
-      const keywords = topKeywords(args.claimSummary, 5).join(' ');
-      const priorityCutoff = isoDateOrNow(args.priorityDate);
-      const params = new URLSearchParams({
-        q: `${keywords} created:<${priorityCutoff}`,
-        sort: 'stars',
-        order: 'desc',
-        per_page: String(limit)
-      });
-
-      const res = await fetch(
-        `https://api.github.com/search/repositories?${params.toString()}`,
-        {
-          headers: {
-            Accept: 'application/vnd.github+json',
-            Authorization: `Bearer ${token}`,
-            'X-GitHub-Api-Version': '2022-11-28'
-          }
-        }
-      );
-      if (!res.ok) throw new Error(`GitHub ${res.status}: ${await res.text()}`);
-      const data = (await res.json()) as GhSearchResponse;
-
-      return data.items.map((r) =>
-        PriorArtCandidateSchema.parse({
-          repo: r.full_name,
-          url: r.html_url,
-          firstCommitDate: r.created_at.slice(0, 10),
-          stars: r.stargazers_count,
-          evidenceSnippet: r.description ?? '',
-          predatesPriorityDate:
-            r.created_at.slice(0, 10) < isoDateOrNow(args.priorityDate)
-        })
-      );
-    },
-    () => [
-      PriorArtCandidateSchema.parse({
-        repo: 'langchain-ai/langchain',
-        url: 'https://github.com/langchain-ai/langchain',
-        firstCommitDate: '2022-10-17',
-        stars: 92000,
-        evidenceSnippet:
-          'Tool-calling agent framework with retrieval chains predating many 2024+ claim filings.',
-        predatesPriorityDate: args.priorityDate > '2022-10-17'
-      }),
-      PriorArtCandidateSchema.parse({
-        repo: 'hwchase17/chat-langchain',
-        url: 'https://github.com/hwchase17/chat-langchain',
-        firstCommitDate: '2023-02-04',
-        stars: 5300,
-        evidenceSnippet:
-          'Retrieval-augmented chat reference implementation with vector-indexed chunks.',
-        predatesPriorityDate: args.priorityDate > '2023-02-04'
-      })
-    ]
+  const res = await fetch(
+    `https://api.github.com/search/repositories?${params.toString()}`,
+    {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        Authorization: `Bearer ${token}`,
+        'X-GitHub-Api-Version': '2022-11-28'
+      }
+    }
   );
+  if (!res.ok) await failFromResponse(tool, res, 'GitHub Search API');
+  const data = (await res.json()) as GhSearchResponse;
+
+  const hits = data.items.map((r) =>
+    PriorArtCandidateSchema.parse({
+      repo: r.full_name,
+      url: r.html_url,
+      firstCommitDate: r.created_at.slice(0, 10),
+      stars: r.stargazers_count,
+      evidenceSnippet: r.description ?? '',
+      predatesPriorityDate: r.created_at.slice(0, 10) < priorityCutoff
+    })
+  );
+
+  if (hits.length === 0) {
+    throw new IntegrationError(
+      tool,
+      'empty_result',
+      `GitHub Search API returned 0 repos for keywords [${keywords.join(', ')}] created:<${priorityCutoff}. Try tinyfish_githubRepos for a broader web sweep, or relax the priority cutoff.`
+    );
+  }
+  return hits;
 }
 
 function isoDateOrNow(input: string): string {

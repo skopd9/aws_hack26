@@ -9,14 +9,14 @@ IP-Pulse is a real-time agentic patent-intelligence platform for software engine
 - Next.js 14 App Router, TypeScript strict, Tailwind
 - Vercel AI SDK (`ai`, `@ai-sdk/anthropic`, `@ai-sdk/openai-compatible`, `@ai-sdk/react`)
 - Anthropic Claude as orchestrator; Kimi K2.6 on Akash ML for bulk text (claim summarization, prior-art rerank)
-- WunderGraph for MCP tool definitions (`.wundergraph/operations/*`)
+- **WunderGraph Cosmo** federated graph for the entire data layer: 5 Apollo Federation v2 subgraphs (`subgraphs/{patents,priorart,litigation,verification,analysis}`) wrapped behind a Cosmo Router. Tool definitions live in `lib/cosmo/tools.ts` and run as GraphQL operations against the router. Onboarding playbook in `cosmo/`.
 - ioredis for session + telemetry + rate limiting
 - Zod for every input/output boundary
 - Chainguard `cgr.dev/chainguard/*` base images
 
 ## Architectural rules
 
-1. **MCP-first**: all external data (USPTO, Google Patents, GitHub, PACER/PTAB, TinyFish, Nexla, Ghost, Akash ML) is accessed ONLY through WunderGraph MCP operations in `.wundergraph/operations/`. Never call `fetch` to an external host from `app/api/**` or `lib/agent/**`.
+1. **Federation-first**: all external data (USPTO, Google Patents, GitHub, PACER/PTAB, TinyFish, Nexla, Ghost, Akash ML) is accessed ONLY through the WunderGraph Cosmo subgraphs in `subgraphs/*`, fronted by `lib/cosmo/tools.ts` (Claude-visible MCP tools). Never call `fetch` to an external host from `app/api/**` or `lib/agent/**`. Add a new data source = add a resolver to the right subgraph + a tool entry in `lib/cosmo/tools.ts` + republish via `npm run cosmo:setup`.
 
 2. **Agent lives in `lib/agent/`**. Route handlers are thin — they verify, parse, dispatch. Orchestration logic (tool-use loops, system prompts, RiskReport assembly) never leaks into routes.
 
@@ -25,7 +25,7 @@ IP-Pulse is a real-time agentic patent-intelligence platform for software engine
 4. **Investigative chain**: when assessing a threat, the system prompt instructs the agent to follow this order with early-exit:
    discover → read → distill (Kimi) → invalidate (github.priorArt + Kimi rerank) → weight (pacer + ptab) → ground (tinyfish) → cache (ghost) → compose.
 
-5. **`MOCK_FALLBACK` rule**: every integration client in `lib/integrations/*` and every `.wundergraph/operations/*` must honor `process.env.MOCK_FALLBACK === 'true'` by returning typed mock data when creds are missing or a live call errors. The demo must never crash because an external service is down.
+5. **No mock fallbacks; verbose, retryable tool errors**: integration clients in `lib/integrations/*` MUST throw `IntegrationError(tool, cause, message, details?)` from `lib/integrations/_common.ts` when a live call fails, with `cause` ∈ `missing_credential | invalid_input | upstream_error | rate_limit | timeout | parse_error | not_implemented | empty_result | unknown`. Never return mock data on failure — the model needs to know what actually went wrong so it can adapt. Subgraph resolvers run with `maskedErrors: false` so the verbose message reaches the router and the agent. `lib/cosmo/tools.ts:instrument` retries transient failures up to 3 times with exponential backoff (200ms→400ms→800ms), skipping retry for permanent causes. After exhaustion it returns a `__toolError` envelope as the tool result so the LLM sees the failure trail on its next step (the system-prompt "Tool failures" section teaches it how to react). `lib/cosmo/tools.ts` chooses Cosmo Router or direct integration purely from `COSMO_ROUTER_URL` — there is NO automatic fallback between them.
 
 6. **Redis key conventions**:
    - `tenant:{id}:session` — TTL 24h — conversation history
@@ -33,7 +33,7 @@ IP-Pulse is a real-time agentic patent-intelligence platform for software engine
    - `tenant:{id}:rl` — token bucket (Lua script)
    - `tool:calls` — capped stream (XTRIM MAXLEN ~ 10000) — every MCP tool invocation
 
-7. **Telemetry rule**: `lib/wundergraph/mcp.ts:executeTool` wraps every call with an XADD to `tool:calls` carrying `{ tenant, tool, args, durationMs, outcome }`. The web chat's right pane reads this via SSE at `/api/telemetry/stream` — this is the MCP-visibility demo money-shot.
+7. **Telemetry rule**: `lib/cosmo/tools.ts:instrument` wraps every tool call with an XADD to `tool:calls` carrying `{ tenant, tool, args, durationMs, outcome, attempts, error? }`. `outcome` is `ok` (succeeded first try), `retry` (succeeded after one or more retries; `error` carries the last failure message), or `error` (all retries exhausted; `error` carries the full failure trail). The web chat's right pane reads this via SSE at `/api/telemetry/stream` — this is the MCP-visibility demo money-shot.
 
 8. **Security**:
    - `import 'server-only'` on every module that holds secrets or hits the DB.
@@ -47,7 +47,7 @@ IP-Pulse is a real-time agentic patent-intelligence platform for software engine
    Both `components/chat/RiskReportCard.tsx` (web), `lib/slack.ts` Block Kit builder (Slack), and `lib/vapi.toVoiceFriendly` (voice) render from this same object.
 
 10. **Do not touch**:
-    - `.wundergraph/generated/**` (WG codegen)
+    - `cosmo/schemas/**` (auto-generated SDL exports from `cosmo:setup`)
     - `public/**` (static assets only)
     - `.next/**`, `node_modules/**`
 
@@ -63,4 +63,4 @@ IP-Pulse is a real-time agentic patent-intelligence platform for software engine
 
 - Run `npm run typecheck` after any file-group-sized change.
 - Keep `zod` schemas at the edges, pass parsed objects inward; never pass raw `unknown` across a layer.
-- New MCP tools go in `.wundergraph/operations/*` and are auto-exposed to Claude via `lib/wundergraph/mcp.getMcpTools()`. Adding a tool = one file, no orchestrator change.
+- New MCP tools = (1) add a query/mutation field + resolver to the right subgraph in `subgraphs/*`, (2) add a tool entry with its GraphQL operation string in `lib/cosmo/tools.ts:getMcpTools`, (3) `npm run cosmo:setup` to republish. The orchestrator does not change.
