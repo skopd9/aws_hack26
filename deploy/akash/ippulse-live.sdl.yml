@@ -1,0 +1,127 @@
+---
+# IP-Pulse — live SDL targeting Akash Console API.
+#
+# Image source:
+#   docker.io/aimrex/ippulse-web:latest    (linux/amd64, anonymous pull)
+#   cgr.dev/chainguard/redis:latest        (Chainguard public, anonymous pull)
+#
+# Submitted via `npm run akash:deploy` (scripts/akash-deploy.ts), which
+# uses the Console Managed-Wallet API:
+#   POST   /v1/deployments  { sdl, deposit }
+#   GET    /v1/bids?dseq
+#   POST   /v1/leases       (cheapest bid)
+#   GET    /v1/deployments/{dseq}  -> service URIs
+#
+# NOTE: Secrets are baked into this SDL at deploy time so Akash providers
+# can hand them to the container. For a longer-lived deployment, swap to
+# the Akash CLI's secrets feature or Vercel/AWS Secrets Manager and have
+# the container fetch at boot.
+
+version: "2.0"
+
+services:
+  web:
+    image: docker.io/aimrex/ippulse-web:latest
+    env:
+      - NODE_ENV=production
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+      - REDIS_URL=redis://redis:6379
+      - MOCK_FALLBACK=true
+
+      # Anthropic — required for the chat agent.
+      - ANTHROPIC_API_KEY=__ANTHROPIC_API_KEY__
+
+      # AkashML (Kimi K2.6) — used as the deterministic-tools model.
+      - AKASHML_API_KEY=__AKASHML_API_KEY__
+      - AKASHML_BASE_URL=https://api.akashml.com/v1
+      - AKASHML_MODEL=kimi-k2.6
+
+      # TinyFish + GitHub — real-data tools (graceful-fallback to mocks).
+      - TINYFISH_API_KEY=__TINYFISH_API_KEY__
+      - TINYFISH_FETCH_URL=https://api.fetch.tinyfish.ai
+      - TINYFISH_SEARCH_URL=https://api.search.tinyfish.ai
+      - GITHUB_TOKEN=__GITHUB_TOKEN__
+
+      # Vapi voice (server-side webhook validator + browser public key).
+      - VAPI_API_KEY=__VAPI_API_KEY__
+      - VAPI_WEBHOOK_SECRET=__VAPI_WEBHOOK_SECRET__
+      - NEXT_PUBLIC_VAPI_PUBLIC_KEY=__NEXT_PUBLIC_VAPI_PUBLIC_KEY__
+
+      # Ghost Postgres — timescale URL (used by the analytics tools).
+      - GHOST_DATABASE_URL=__GHOST_DATABASE_URL__
+    expose:
+      - port: 3000
+        as: 80
+        proto: tcp
+        to:
+          - global: true
+
+  redis:
+    image: docker.io/library/redis:7-alpine
+    command:
+      - redis-server
+      - "--appendonly"
+      - "yes"
+      - "--dir"
+      - "/data"
+    expose:
+      - port: 6379
+        proto: tcp
+        to:
+          - service: web
+    params:
+      storage:
+        data:
+          mount: /data
+          readOnly: false
+
+profiles:
+  compute:
+    web-compute:
+      resources:
+        cpu:
+          units: 1.0
+        memory:
+          size: 1Gi
+        storage:
+          - size: 2Gi
+    redis-compute:
+      resources:
+        cpu:
+          units: 0.5
+        memory:
+          size: 512Mi
+        storage:
+          - size: 1Gi
+          - name: data
+            size: 2Gi
+            attributes:
+              persistent: true
+              class: beta3
+
+  placement:
+    akash-dc:
+      attributes:
+        host: akash
+      signedBy:
+        anyOf:
+          # Overclock Labs trusted-provider audit key.
+          - akash1365yvmc4s7awdyj3n2sav7xfx76adc6dnmlx63
+      pricing:
+        web-compute:
+          denom: uakt
+          amount: 5000
+        redis-compute:
+          denom: uakt
+          amount: 2000
+
+deployment:
+  web:
+    akash-dc:
+      profile: web-compute
+      count: 1
+  redis:
+    akash-dc:
+      profile: redis-compute
+      count: 1

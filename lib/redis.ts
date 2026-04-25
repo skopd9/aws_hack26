@@ -46,7 +46,12 @@ export async function safeRedisOp<T>(
     return await op();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (!msg.includes('ECONNREFUSED') && !msg.includes('max retries')) {
+    const isConnErr =
+      msg.includes('ECONNREFUSED') ||
+      msg.includes('max retries') ||
+      msg.includes('Stream isn') || // "Stream isn't writeable" — offline queue disabled
+      msg.includes('enableOfflineQueue');
+    if (!isConnErr) {
       console.warn('[redis] op failed:', msg);
     }
     return fallback;

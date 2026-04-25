@@ -65,10 +65,40 @@ export async function getSessionHistory(tenant: string): Promise<CoreMessage[]> 
   try {
     const parsed = SessionEnvelopeSchema.safeParse(JSON.parse(raw));
     if (!parsed.success) return [];
-    return parsed.data.messages as CoreMessage[];
+    return sanitizeForAnthropic(parsed.data.messages as CoreMessage[]);
   } catch {
     return [];
   }
+}
+
+// Anthropic prompt validation rejects sequences where (a) a `tool` message is
+// not immediately preceded by an `assistant` message containing matching
+// `tool_use` parts, or (b) the post-system head is not a `user` message.
+// Older compression cycles could split mid-pair, persisting an orphan tool
+// result that silently caused empty streams. Strip the post-system prefix
+// down to the first valid `user` turn so historical sessions self-heal.
+export function sanitizeForAnthropic(messages: CoreMessage[]): CoreMessage[] {
+  if (messages.length === 0) return messages;
+  const out: CoreMessage[] = [];
+  let i = 0;
+  while (i < messages.length && messages[i].role === 'system') {
+    out.push(messages[i]);
+    i += 1;
+  }
+  while (i < messages.length && messages[i].role !== 'user') {
+    i += 1;
+  }
+  for (; i < messages.length; i++) {
+    const msg = messages[i];
+    if (msg.role === 'tool') {
+      const prev = out[out.length - 1];
+      if (!prev || prev.role !== 'assistant' || !hasToolCallParts(prev)) {
+        continue;
+      }
+    }
+    out.push(msg);
+  }
+  return out;
 }
 
 export async function clearSession(tenant: string): Promise<void> {
@@ -146,6 +176,14 @@ async function compressIfNeeded(messages: CoreMessage[]): Promise<{
   // larger than RECENT_KEEP_TOKENS by itself.
   splitIdx = Math.min(splitIdx, Math.max(0, messages.length - 2));
 
+  // Anthropic invariant: every `tool` message must be immediately preceded
+  // by an `assistant` message containing the matching `tool_use` block.
+  // If the recent-window cut lands on a `tool` message (or right after an
+  // assistant that emitted tool_use blocks), the orphaned half will make
+  // the next prompt invalid and the API silently returns an empty stream.
+  // Walk the split backward until the boundary is on a clean turn break.
+  splitIdx = alignSplitToTurnBoundary(messages, splitIdx);
+
   const older = messages.slice(0, splitIdx);
   const recent = messages.slice(splitIdx);
   if (older.length === 0) {
@@ -165,6 +203,38 @@ async function compressIfNeeded(messages: CoreMessage[]): Promise<{
     tokens: estimateTokens(next),
     didCompress: true
   };
+}
+
+function hasToolCallParts(message: CoreMessage): boolean {
+  if (message.role !== 'assistant') return false;
+  const c = message.content as unknown;
+  if (!Array.isArray(c)) return false;
+  return c.some((part: any) => part?.type === 'tool-call');
+}
+
+// Walk backward until messages[splitIdx] is the first message of a complete
+// turn — i.e. NOT a `tool` message and NOT the assistant message that emitted
+// the tool_use blocks for any subsequent `tool` messages. This prevents the
+// summarizer from cutting an assistant/tool pair in half and leaving Anthropic
+// with an orphaned tool result that fails prompt validation.
+function alignSplitToTurnBoundary(
+  messages: CoreMessage[],
+  splitIdx: number
+): number {
+  let idx = splitIdx;
+  while (idx > 0) {
+    const at = messages[idx];
+    const prev = messages[idx - 1];
+    const startsWithTool = at.role === 'tool';
+    const prevIsToolCallAssistant =
+      hasToolCallParts(prev) && messages[idx]?.role === 'tool';
+    if (startsWithTool || prevIsToolCallAssistant) {
+      idx -= 1;
+      continue;
+    }
+    break;
+  }
+  return idx;
 }
 
 function transcribe(messages: CoreMessage[]): string {

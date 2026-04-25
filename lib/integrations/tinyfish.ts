@@ -463,6 +463,11 @@ function extractClaims(pageText: string): string {
   return pageText.slice(claimsIdx, end).trim().slice(0, 3000);
 }
 
+/** True if s looks like a bare patent number with no other words. */
+function isSinglePatentNo(s: string): boolean {
+  return /^[A-Z]{2}[\dA-Z]+$/i.test(s.trim().replace(/\s+/g, ''));
+}
+
 export async function searchUsptoPubs(args: {
   query: string;
   dateFrom?: string;
@@ -472,6 +477,46 @@ export async function searchUsptoPubs(args: {
   const tool = 'tinyfish.usptoSearch';
   const limit = args.limit ?? 8;
   const fetchFull = args.fetchFullText ?? true;
+
+  // For a bare patent number the ppubs.uspto.gov site: search returns nothing —
+  // the database is not fully indexed. Build the canonical PATFT/ppubs URL directly.
+  const normalizedQuery = args.query.trim().replace(/\s+/g, '').toUpperCase();
+  if (isSinglePatentNo(args.query)) {
+    const kind = classifyKind(normalizedQuery);
+    const fetchTarget =
+      kind === 'granted'
+        ? patftUrl(normalizedQuery)
+        : `https://ppubs.uspto.gov/dirsearch-public/print/downloadPdf/${normalizedQuery}`;
+    const ppubsUrl = `https://ppubs.uspto.gov/pubwebapp/external.html?q=(patentNumber.eq.${normalizedQuery})&db=USPAT`;
+
+    let claimText = '';
+    let abstract = '';
+    let title = normalizedQuery;
+
+    if (fetchFull) {
+      try {
+        const page = await fetchOne(tool, fetchTarget, 'markdown');
+        claimText = extractClaims(page.text);
+        const absIdx = page.text.toLowerCase().indexOf('abstract');
+        if (absIdx !== -1) {
+          const afterAbs = page.text.slice(absIdx + 8, absIdx + 1200).trim();
+          if (afterAbs.length > 20) abstract = afterAbs.split('\n')[0].trim();
+        }
+        title =
+          (page.title ?? '')
+            .replace(/\s*[-—]\s*(USPTO|US Patent|PATFT).*$/i, '')
+            .replace(new RegExp(`^${normalizedQuery}\\s*[-—]\\s*`, 'i'), '')
+            .trim() || normalizedQuery;
+      } catch {
+        /* fall through to the web-search path below */
+      }
+    }
+
+    // Only short-circuit if we actually got something useful.
+    if (abstract || claimText) {
+      return [{ patentNo: normalizedQuery, title, abstract, claimText, url: fetchTarget, ppubsUrl, kind }];
+    }
+  }
 
   const queryParts = [`site:ppubs.uspto.gov ${args.query}`];
   if (args.dateFrom) queryParts.push(`after:${args.dateFrom}`);

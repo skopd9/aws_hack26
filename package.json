@@ -16,6 +16,9 @@
     "cosmo:check": "for s in patents priorart litigation verification analysis; do wgc subgraph check $s --namespace development --schema cosmo/schemas/$s.graphqls; done",
     "ghost:migrate": "ghost sql ip-pulse < deploy/ghost/schema.sql",
     "security:scan": "bash scripts/security-scan.sh",
+    "akash:deploy": "tsx scripts/akash-deploy.ts",
+    "akash:status": "tsx scripts/akash-status.ts",
+    "akash:update": "tsx scripts/akash-update.ts",
     "smoke:tool-errors": "tsx --conditions=react-server scripts/smoke-tool-errors.ts"
   },
   "dependencies": {

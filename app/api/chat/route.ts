@@ -48,7 +48,17 @@ export async function POST(req: NextRequest) {
     newUserMessages
   });
 
-  const response = result.toDataStreamResponse();
+  // Surface backend errors (e.g. malformed conversation history rejected
+  // by Anthropic) inside the data stream instead of silently closing the
+  // body. Without this, useChat sees a 200 with no text and renders
+  // nothing, making real bugs invisible.
+  const response = result.toDataStreamResponse({
+    getErrorMessage: (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[chat] stream error:', message);
+      return `[chat] ${message}`;
+    }
+  });
 
   if (newTenant) {
     response.headers.append(
